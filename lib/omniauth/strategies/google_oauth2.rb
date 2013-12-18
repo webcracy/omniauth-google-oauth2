@@ -3,14 +3,15 @@ require 'omniauth/strategies/oauth2'
 module OmniAuth
   module Strategies
     class GoogleOauth2 < OmniAuth::Strategies::OAuth2
-      BASE_SCOPE_URL = "https://www.googleapis.com/auth/"
-      DEFAULT_SCOPE = "userinfo.email,userinfo.profile"
+      DEFAULT_SCOPE = "https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/userinfo.profile"
 
       option :name, 'google_oauth2'
       
       option :skip_friends, true
 
-      option :authorize_options, [:access_type, :hd, :login_hint, :prompt, :scope, :state, :redirect_uri]
+      option :openid_legacy, false
+
+      option :authorize_options, [:access_type, :hd, :login_hint, :prompt, :scope, :state, :redirect_uri, 'openid.realm']
 
       option :client_options, {
         :site          => 'https://accounts.google.com',
@@ -26,9 +27,10 @@ module OmniAuth
 
           raw_scope = params[:scope] || DEFAULT_SCOPE
           scope_list = raw_scope.split(" ").map {|item| item.split(",")}.flatten
-          scope_list.map! { |s| s =~ /^https?:\/\// ? s : "#{BASE_SCOPE_URL}#{s}" }
           params[:scope] = scope_list.join(" ")
           params[:access_type] = 'offline' if params[:access_type].nil?
+
+          params['openid.realm'] ||= callback_url if options[:openid_legacy]
 
           session['omniauth.state'] = params[:state] if params['state']
         end
@@ -53,7 +55,12 @@ module OmniAuth
         hash = {}
         hash[:raw_info] = raw_info unless skip_info?
         hash[:raw_friend_info] = raw_friend_info(raw_info['id']) unless skip_info? || options[:skip_friends]
+        hash[:raw_openid_info] = raw_openid_info if options[:openid_legacy]
         prune! hash
+      end
+
+      def raw_openid_info
+        @raw_openid_info ||= decoded_id_token
       end
 
       def raw_info
@@ -75,6 +82,18 @@ module OmniAuth
       alias :build_access_token :custom_build_access_token
 
       private
+
+      def decoded_id_token
+        id_token, token = access_token.params['id_token'], access_token.token
+        return unless verify_token(id_token, token)
+        user_part = id_token.split('.')[1]
+        user_info = Base64.decode64(user_part) + '}'
+        begin
+          JSON.parse user_info
+        rescue => e
+          {}
+        end
+      end
 
       def prune!(hash)
         hash.delete_if do |_, v|
